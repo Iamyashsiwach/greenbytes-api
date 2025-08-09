@@ -1,0 +1,28 @@
+[Unit]
+Description=GreenBytes API - Multimodal AI for Sugarcane Analysis
+After=network.target
+
+[Service]
+Type=exec
+User=azureuser
+Group=azureuser
+WorkingDirectory=/home/azureuser/greenbytes-api
+EnvironmentFile=/home/azureuser/greenbytes-api/.env
+ExecStart=/bin/bash -lc 'source .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2'
+Restart=always
+RestartSec=3
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/azureuser/greenbytes-api
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=greenbytes-api
+
+[Install]
+WantedBy=multi-user.target

@@ -8,7 +8,7 @@ from PIL import Image
 import io
 
 # Configuration
-API_URL = "http://localhost:8000"
+API_URL = "http://20.193.136.83:8000"
 
 def test_health():
     """Test health endpoint"""
