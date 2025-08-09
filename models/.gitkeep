@@ -1,0 +1,5 @@
+# This directory will contain the actual model files
+# - deadheart_seg.pt (YOLO segmentation model for Dead Heart disease)
+# - esb_det.pt (YOLO detection model for Early Shoot Borer pest)
+# - deadheart_tabnet.pkl (TabNet model for Dead Heart)
+# - esb_tabnet.pkl (TabNet model for ESB)
