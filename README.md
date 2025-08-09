@@ -1,6 +1,6 @@
-# GreenBytes API - FastAPI Backend
+# GreenBytes API - MVP Backend
 
-Multimodal AI backend for sugarcane disease and pest detection using YOLO + TabNet fusion.
+Minimal FastAPI backend for multimodal sugarcane AI analysis supporting answers-only, image-only, and combined inference modes.
 
 ## 🚀 Quick Start
 
@@ -8,7 +8,7 @@ Multimodal AI backend for sugarcane disease and pest detection using YOLO + TabN
 
 1. **Create virtual environment**:
 ```bash
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 ```
 
@@ -20,146 +20,115 @@ pip install -r requirements.txt
 3. **Configure environment**:
 ```bash
 cp .env.example .env
-# Edit .env if needed (USE_STUB=true for demo)
+# Edit .env if needed (defaults work for MVP)
 ```
 
 4. **Run server**:
 ```bash
-python main.py
+uvicorn main:app --host 0.0.0.0 --port 8000
 # Server starts on http://localhost:8000
 ```
-
-## 🔧 Configuration
-
-### Environment Variables
-- `USE_STUB=true` - Enable stub mode (no real models needed)
-- `YOLO_THRESH=0.60` - YOLO confidence threshold
-- `TABNET_THRESH=0.70` - TabNet probability threshold  
-- `MAX_UPLOAD_MB=8` - Maximum upload size
 
 ## 📡 API Endpoints
 
 ### Health Check
-```
-GET /health
-Response: {"ok": true}
+```bash
+curl http://localhost:8000/health
+# Response: {"ok": true}
 ```
 
-### Prediction
+### Prediction Modes
+
+#### 1. Answers-Only (JSON)
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "pest", 
+    "answers": {"Q1": 1, "Q2": 0, "Q3": -1, "Q4": 1}
+  }'
 ```
-POST /predict
-Content-Type: multipart/form-data
 
-Fields:
-- image: JPEG/PNG file (max 8MB)
-- mode: "disease" or "pest"  
-- answers: JSON array of 10 integers in {-1, 0, 1}
+#### 2. Image-Only (Multipart)
+```bash
+curl -X POST http://localhost:8000/predict \
+  -F "mode=disease" \
+  -F "file=@test_image.jpg"
+```
 
-Response: {
-  "mode": "disease",
-  "answers": {"Q1": -1, "Q2": 0, ...},
-  "yolo": {"present": true, "conf": 0.785, ...},
-  "tabnet": {"proba": 0.823, "threshold": 0.70, ...},
-  "fusion": {"present": true, "rule": "...", ...},
-  "ref_img": "deadheart_01.jpg"
+#### 3. Combined (Multipart)
+```bash
+curl -X POST http://localhost:8000/predict \
+  -F "mode=pest" \
+  -F "file=@test_image.jpg" \
+  -F 'answers={"Q1": 1, "Q2": 0, "Q3": 1}'
+```
+
+## 🔧 Configuration
+
+Environment variables (in `.env`):
+- `USE_STUB=true` - Use TabNet stub (yes/no ratio logic)
+- `ALLOWED_ORIGINS=http://localhost:3000` - CORS origins
+- `FUSION_YOLO_THRESHOLD=0.60` - YOLO detection threshold
+- `FUSION_TABNET_THRESHOLD=0.70` - TabNet detection threshold
+
+## 🧠 AI Models
+
+### TabNet (Stub Mode)
+- **Logic**: `confidence = yes_count / (yes_count + no_count)`
+- **Ignores**: Unknown answers (-1)
+- **Detection**: confidence >= 0.70
+
+### YOLO (Optional)
+- **Weights**: Place `esb_yolov8_best.pt` and `disease_yolov8s_seg.pt` in `./models/`
+- **Graceful Fallback**: Returns `{"available": false}` if weights missing
+- **Enable**: Set `USE_STUB=false` when models ready
+
+### Fusion Logic
+```
+detected = (yolo_conf >= 0.60) OR (tabnet_conf >= 0.70)
+```
+
+## 📁 Response Format
+
+```json
+{
+  "mode": "pest",
+  "used_image": true,
+  "yolo": {
+    "available": true,
+    "conf": 0.85,
+    "label": 1,
+    "bboxes": [[10, 20, 100, 200]]
+  },
+  "tabnet": {
+    "conf": 0.75,
+    "label": 1,
+    "top_positive_keys": ["Q1", "Q4"]
+  },
+  "fusion": {
+    "detected": true,
+    "reason": "yolo_or_tabnet",
+    "thresholds": {"yolo": 0.60, "tabnet": 0.70}
+  },
+  "trace": {
+    "rules": ["detected iff (yolo>=Y_THR) OR (tabnet>=T_THR)", ...],
+    "numbers": {"yolo_conf": 0.85, "tabnet_conf": 0.75, "yes_count": 2, "no_count": 1}
+  },
+  "reference_image_url": "/static/reference/esb/esb_high.jpg"
 }
-```
-
-## 🚀 Deployment
-
-### Azure VM Deployment
-
-#### One-time VM Setup (Ubuntu)
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3.11 python3.11-venv python3.11-dev git curl
-
-# Clone repository  
-git clone <your-repo-url> /home/azureuser/greenbytes-api
-cd /home/azureuser/greenbytes-api
-```
-
-#### Install and Start Service
-```bash
-# Install systemd service
-sudo ./scripts/install_systemd.sh
-
-# Bootstrap application
-./scripts/bootstrap.sh
-
-# Test deployment
-./scripts/smoke.sh
-```
-
-#### GitHub Actions Deployment
-
-**Required Secrets** (Settings → Secrets and variables → Actions):
-- `AZURE_VM_HOST`: `<vm-ip-or-dns>`
-- `AZURE_VM_USER`: `azureuser`  
-- `AZURE_VM_SSH_KEY`: Private SSH key content
-- `BACKEND_PATH`: `/home/azureuser/greenbytes-api`
-
-**Auto-deploys** on every push to `main` branch.
-
-#### Troubleshooting
-```bash
-# Check service status
-sudo systemctl status fastapi
-
-# View logs
-sudo journalctl -u fastapi -f
-
-# Check firewall
-sudo ufw status
-sudo ufw allow 8000
-
-# Test CORS
-curl -H "Origin: https://<frontend-domain>" http://<vm-ip>:8000/health
 ```
 
 ## 🧪 Testing
 
-### Manual Testing
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Prediction test
-curl -X POST http://localhost:8000/predict \
-  -F "mode=disease" \
-  -F "answers=[-1,0,1,-1,0,1,-1,0,1,0]" \
-  -F "image=@test_image.jpg"
-```
-
-### Automated Testing
-```bash
-python test_api.py
-```
-
-## 🏗️ Architecture
-
-- **FastAPI** - Modern Python web framework
-- **YOLO Integration** - Computer vision inference  
-- **TabNet Integration** - Tabular data processing
-- **Multimodal Fusion** - OR-based combination logic
-- **Systemd Service** - Production deployment
-- **GitHub Actions** - CI/CD pipeline
+Visit http://localhost:8000/docs for interactive API documentation.
 
 ## 📦 Model Integration
 
-**For Production** (set `USE_STUB=false`):
+**When real models are ready**:
+1. Place model files in `./models/` directory
+2. Install model dependencies: `pip install ultralytics pytorch-tabnet`
+3. Set `USE_STUB=false` in `.env`
+4. Restart server
 
-1. Place model files in `models/`:
-   - `deadheart_seg.pt` - YOLO segmentation
-   - `esb_det.pt` - YOLO detection  
-   - `deadheart_tabnet.pkl` - TabNet for disease
-   - `esb_tabnet.pkl` - TabNet for pest
-
-2. Update inference runners:
-   - `inference/yolo_runner.py` - Load and run YOLO models
-   - `inference/tabnet_runner.py` - Load and run TabNet models
-
-## 🤝 Team GreenBytes
-
-VIT Vellore Hackathon - Agricultural AI Technology
+**Current MVP**: Works with stub TabNet and optional YOLO (graceful fallback if weights missing).

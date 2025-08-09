@@ -1,212 +1,367 @@
 """
-FastAPI backend for multimodal sugarcane disease/pest detection.
-Provides health check and prediction endpoints with YOLO+TabNet fusion.
+GreenBytes API - Minimal MVP
+FastAPI backend supporting multimodal inference: answers-only, image-only, and combined modes
 """
 
 import os
-import io
 import json
+import tempfile
 from typing import Dict, List, Optional, Union
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from PIL import Image
-import numpy as np
 
 # Load environment variables
 load_dotenv()
 
-# Import inference modules
-from inference.yolo_runner import run_yolo
-from inference.tabnet_runner import run_tabnet
-from inference.fusion import fuse
+app = FastAPI(title="GreenBytes API", description="Multimodal AI for sugarcane analysis", version="1.0.0")
 
-# Configuration
+# Configuration from environment
 USE_STUB = os.getenv("USE_STUB", "true").lower() == "true"
-YOLO_THRESH = float(os.getenv("YOLO_THRESH", "0.60"))
-TABNET_THRESH = float(os.getenv("TABNET_THRESH", "0.70"))
-MAX_UPLOAD_MB = float(os.getenv("MAX_UPLOAD_MB", "8"))
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+FUSION_YOLO_THRESHOLD = float(os.getenv("FUSION_YOLO_THRESHOLD", "0.60"))
+FUSION_TABNET_THRESHOLD = float(os.getenv("FUSION_TABNET_THRESHOLD", "0.70"))
+REF_IMAGE_BASE_URL = os.getenv("REF_IMAGE_BASE_URL", "/static/reference")
+YOLO_ESB_WEIGHTS = os.getenv("YOLO_ESB_WEIGHTS", "./models/esb_yolov8_best.pt")
+YOLO_DISEASE_WEIGHTS = os.getenv("YOLO_DISEASE_WEIGHTS", "./models/disease_yolov8s_seg.pt")
 
-# Initialize FastAPI app
-app = FastAPI(title="GreenBytes Multimodal API")
-
-# Configure CORS
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Initially allow all, tighten in production
+    allow_origins=[origin.strip() for origin in ALLOWED_ORIGINS],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
+# Mount static files for reference images
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Response models
+# Pydantic models
 class HealthResponse(BaseModel):
     ok: bool
 
+class PredictJSON(BaseModel):
+    mode: str
+    answers: Optional[Dict[str, int]] = None
 
 class YOLOResult(BaseModel):
-    present: bool
+    available: bool
     conf: float
-    boxes: List[List[float]]
-    mask_rle: Optional[str]
-
+    label: int
+    bboxes: List[List[float]]
 
 class TabNetResult(BaseModel):
-    proba: float
-    threshold: float
-    pred: bool
-
+    conf: float
+    label: int
+    top_positive_keys: List[str]
 
 class FusionResult(BaseModel):
-    rule: str
-    yolo_thresh: float
-    present: bool
+    detected: bool
+    reason: str
+    thresholds: Dict[str, float]
 
+class TraceResult(BaseModel):
+    rules: List[str]
+    numbers: Dict[str, Union[float, int, None]]
 
 class PredictResponse(BaseModel):
     mode: str
-    answers: Dict[str, int]
+    used_image: bool
     yolo: YOLOResult
     tabnet: TabNetResult
     fusion: FusionResult
-    ref_img: str
+    trace: TraceResult
+    reference_image_url: str
 
+# Global YOLO model cache
+_yolo_models = {}
+
+def load_yolo_model(mode: str):
+    """Lazy load YOLO model if weights exist"""
+    if mode in _yolo_models:
+        return _yolo_models[mode]
+    
+    weights_path = YOLO_ESB_WEIGHTS if mode == "pest" else YOLO_DISEASE_WEIGHTS
+    
+    if not os.path.exists(weights_path):
+        _yolo_models[mode] = None
+        return None
+    
+    try:
+        from ultralytics import YOLO
+        model = YOLO(weights_path)
+        _yolo_models[mode] = model
+        return model
+    except ImportError:
+        print(f"ultralytics not installed, YOLO unavailable for {mode}")
+        _yolo_models[mode] = None
+        return None
+    except Exception as e:
+        print(f"Failed to load YOLO model for {mode}: {e}")
+        _yolo_models[mode] = None
+        return None
+
+def run_yolo_inference(mode: str, image_bytes: bytes) -> Dict:
+    """Run YOLO inference on image"""
+    model = load_yolo_model(mode)
+    
+    if model is None:
+        return {
+            "available": False,
+            "conf": 0.0,
+            "label": 0,
+            "bboxes": []
+        }
+    
+    try:
+        # Save bytes to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+            tmp_file.write(image_bytes)
+            tmp_path = tmp_file.name
+        
+        try:
+            # Run inference
+            results = model(tmp_path, conf=FUSION_YOLO_THRESHOLD)
+            
+            # Extract results
+            max_conf = 0.0
+            bboxes = []
+            
+            for r in results:
+                if r.boxes is not None and len(r.boxes) > 0:
+                    for box in r.boxes:
+                        conf = float(box.conf.cpu().numpy()[0])
+                        max_conf = max(max_conf, conf)
+                        
+                        # Convert bbox to list [x1, y1, x2, y2]
+                        xyxy = box.xyxy.cpu().numpy()[0].tolist()
+                        bboxes.append(xyxy)
+            
+            label = 1 if max_conf >= FUSION_YOLO_THRESHOLD else 0
+            
+            return {
+                "available": True,
+                "conf": max_conf,
+                "label": label,
+                "bboxes": bboxes
+            }
+            
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                
+    except Exception as e:
+        print(f"YOLO inference failed: {e}")
+        return {
+            "available": False,
+            "conf": 0.0,
+            "label": 0,
+            "bboxes": []
+        }
+
+def run_tabnet_stub(answers: Dict[str, int]) -> Dict:
+    """Stub TabNet implementation: conf = yes_count / (yes_count + no_count)"""
+    if not answers:
+        return {
+            "conf": 0.0,
+            "label": 0,
+            "top_positive_keys": []
+        }
+    
+    # Count yes (1) and no (0), ignore unknown (-1)
+    yes_count = sum(1 for v in answers.values() if v == 1)
+    no_count = sum(1 for v in answers.values() if v == 0)
+    total_known = yes_count + no_count
+    
+    if total_known > 0:
+        conf = yes_count / total_known
+    else:
+        conf = 0.0
+    
+    # Get positive answer keys
+    top_positive_keys = [k for k, v in answers.items() if v == 1]
+    top_positive_keys.sort()
+    
+    # Determine label
+    label = 1 if conf >= FUSION_TABNET_THRESHOLD else 0
+    
+    return {
+        "conf": conf,
+        "label": label,
+        "top_positive_keys": top_positive_keys
+    }
+
+def pick_reference_image(mode: str, yolo_conf: Optional[float], tabnet_conf: float) -> str:
+    """Pick reference image based on confidence scores"""
+    # Determine overall confidence
+    scores = [tabnet_conf]
+    if yolo_conf is not None:
+        scores.append(yolo_conf)
+    
+    max_score = max(scores) if scores else 0.0
+    
+    # Determine bucket
+    if max_score >= 0.8:
+        bucket = "high"
+    elif max_score >= 0.6:
+        bucket = "mid"
+    else:
+        bucket = "low"
+    
+    # Build URL
+    subfolder = "esb" if mode == "pest" else "disease"
+    filename = f"{subfolder}_{bucket}.jpg"
+    return f"{REF_IMAGE_BASE_URL}/{subfolder}/{filename}"
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
-    return {"ok": True}
-
+    return HealthResponse(ok=True)
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(
-    image: UploadFile = File(...),
-    mode: str = Form(...),
-    answers: str = Form(...)
+    request: Request,
+    # For multipart/form-data
+    mode: Optional[str] = Form(None),
+    answers: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
 ):
     """
-    Main prediction endpoint.
-    
-    Args:
-        image: Uploaded image file (JPEG/PNG)
-        mode: "disease" or "pest"
-        answers: JSON string with array of 10 integers in {-1, 0, 1}
-    
-    Returns:
-        Prediction results with YOLO, TabNet, and fusion outputs
+    Multimodal prediction endpoint supporting:
+    1. JSON: answers-only mode
+    2. Multipart: image-only mode
+    3. Multipart: combined mode (image + answers)
     """
     
-    # Validate mode
-    if mode not in ["disease", "pest"]:
-        raise HTTPException(status_code=400, detail="Invalid mode. Must be 'disease' or 'pest'")
+    # Determine request type
+    content_type = request.headers.get("content-type", "")
     
-    # Validate file type
-    if image.content_type not in ["image/jpeg", "image/png"]:
-        raise HTTPException(status_code=415, detail="Unsupported media type. Upload JPEG or PNG")
+    if content_type.startswith("application/json"):
+        # JSON mode - answers only
+        body = await request.body()
+        try:
+            data = json.loads(body)
+            mode_str = data.get("mode")
+            answers_dict = data.get("answers", {})
+            image_bytes = None
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
     
-    # Check file size
-    file_size_mb = 0
-    image_bytes = await image.read()
-    file_size_mb = len(image_bytes) / (1024 * 1024)
-    
-    if file_size_mb > MAX_UPLOAD_MB:
-        raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {MAX_UPLOAD_MB}MB")
-    
-    # Parse and validate answers
-    try:
-        answers_list = json.loads(answers)
-        if not isinstance(answers_list, list):
-            raise ValueError("Answers must be a list")
-        if len(answers_list) != 10:
-            raise ValueError("Exactly 10 answers required")
-        if not all(a in [-1, 0, 1] for a in answers_list):
-            raise ValueError("Answers must be -1, 0, or 1")
-    except (json.JSONDecodeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid answers: {str(e)}")
-    
-    # Generate deterministic outputs for stub mode
-    if USE_STUB:
-        # Create deterministic fake outputs based on inputs
-        base_seed = sum(answers_list) + len(mode) + len(image_bytes) % 100
-        yolo_conf = 0.45 + (base_seed % 40) / 100.0  # Range: 0.45-0.85
-        tabnet_proba = 0.55 + ((base_seed * 2) % 40) / 100.0  # Range: 0.55-0.95
+    elif content_type.startswith("multipart/form-data"):
+        # Multipart mode
+        if not mode:
+            raise HTTPException(status_code=400, detail="mode field required")
         
-        # Fake bounding boxes
-        boxes = []
-        if yolo_conf > YOLO_THRESH:
-            boxes = [[100.0, 100.0, 300.0, 300.0]]
+        mode_str = mode
         
-        yolo_result = {
-            "present": yolo_conf > YOLO_THRESH,
-            "conf": round(yolo_conf, 3),
-            "boxes": boxes,
-            "mask_rle": None
-        }
+        # Parse answers if provided
+        answers_dict = {}
+        if answers:
+            try:
+                answers_dict = json.loads(answers)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON in answers field")
         
-        tabnet_result = {
-            "proba": round(tabnet_proba, 3),
-            "threshold": TABNET_THRESH,
-            "pred": tabnet_proba >= TABNET_THRESH
-        }
+        # Read image if provided
+        image_bytes = None
+        if file:
+            image_bytes = await file.read()
+            if len(image_bytes) == 0:
+                raise HTTPException(status_code=400, detail="Empty image file")
+    
     else:
-        # Run actual models
-        yolo_conf, boxes, mask_rle = run_yolo(image_bytes, mode)
-        tabnet_proba = run_tabnet(answers_list, mode)
-        
+        raise HTTPException(status_code=400, detail="Content-Type must be application/json or multipart/form-data")
+    
+    # Validate mode
+    if mode_str not in ["pest", "disease"]:
+        raise HTTPException(status_code=400, detail="mode must be 'pest' or 'disease'")
+    
+    # Validate inputs
+    if not image_bytes and not answers_dict:
+        raise HTTPException(status_code=400, detail="Must provide either image file or answers")
+    
+    # Run YOLO inference if image provided
+    yolo_result = None
+    if image_bytes:
+        yolo_result = run_yolo_inference(mode_str, image_bytes)
+    else:
         yolo_result = {
-            "present": yolo_conf > YOLO_THRESH,
-            "conf": round(yolo_conf, 3),
-            "boxes": boxes,
-            "mask_rle": mask_rle
-        }
-        
-        tabnet_result = {
-            "proba": round(tabnet_proba, 3),
-            "threshold": TABNET_THRESH,
-            "pred": tabnet_proba >= TABNET_THRESH
+            "available": False,
+            "conf": 0.0,
+            "label": 0,
+            "bboxes": []
         }
     
-    # Apply fusion logic
-    present, rule = fuse(yolo_result["conf"], tabnet_result["proba"], YOLO_THRESH, TABNET_THRESH)
+    # Run TabNet inference (always with answers, empty if not provided)
+    tabnet_result = run_tabnet_stub(answers_dict)
     
-    fusion_result = {
-        "rule": rule,
-        "yolo_thresh": YOLO_THRESH,
-        "present": present
-    }
+    # Fusion logic
+    yolo_conf = yolo_result["conf"] if yolo_result["available"] else None
+    tabnet_conf = tabnet_result["conf"]
     
-    # Map answers to question keys (placeholder mapping for now)
-    question_keys = [f"Q{i+1}" for i in range(10)]
-    answers_dict = {key: val for key, val in zip(question_keys, answers_list)}
+    if image_bytes and answers_dict:
+        # Combined mode
+        yolo_detected = yolo_conf and yolo_conf >= FUSION_YOLO_THRESHOLD
+        tabnet_detected = tabnet_conf >= FUSION_TABNET_THRESHOLD
+        detected = yolo_detected or tabnet_detected
+        reason = "yolo_or_tabnet"
+    elif image_bytes:
+        # Image only
+        detected = yolo_conf and yolo_conf >= FUSION_YOLO_THRESHOLD if yolo_result["available"] else False
+        reason = "image_only"
+    else:
+        # Answers only
+        detected = tabnet_conf >= FUSION_TABNET_THRESHOLD
+        reason = "answers_only"
     
-    # Select reference image
-    ref_images = {
-        "disease": ["deadheart_01.jpg", "deadheart_02.jpg", "deadheart_03.jpg"],
-        "pest": ["esb_01.jpg", "esb_02.jpg", "esb_03.jpg"]
-    }
-    ref_img = ref_images[mode][base_seed % 3] if USE_STUB else ref_images[mode][0]
+    # Count answers for trace
+    yes_count = sum(1 for v in answers_dict.values() if v == 1) if answers_dict else 0
+    no_count = sum(1 for v in answers_dict.values() if v == 0) if answers_dict else 0
     
-    return {
-        "mode": mode,
-        "answers": answers_dict,
-        "yolo": yolo_result,
-        "tabnet": tabnet_result,
-        "fusion": fusion_result,
-        "ref_img": ref_img
-    }
-
-
-# Error handler for unexpected errors
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"message": f"Internal server error: {str(exc)}"}
+    # Build response
+    response = PredictResponse(
+        mode=mode_str,
+        used_image=bool(image_bytes),
+        yolo=YOLOResult(
+            available=yolo_result["available"],
+            conf=yolo_result["conf"],
+            label=yolo_result["label"],
+            bboxes=yolo_result["bboxes"]
+        ),
+        tabnet=TabNetResult(
+            conf=tabnet_result["conf"],
+            label=tabnet_result["label"],
+            top_positive_keys=tabnet_result["top_positive_keys"]
+        ),
+        fusion=FusionResult(
+            detected=detected,
+            reason=reason,
+            thresholds={
+                "yolo": FUSION_YOLO_THRESHOLD,
+                "tabnet": FUSION_TABNET_THRESHOLD
+            }
+        ),
+        trace=TraceResult(
+            rules=[
+                "detected iff (yolo>=Y_THR) OR (tabnet>=T_THR)",
+                f"Y_THR={FUSION_YOLO_THRESHOLD}, T_THR={FUSION_TABNET_THRESHOLD}",
+                "tabnet score = yes/(yes+no), unknown ignored"
+            ],
+            numbers={
+                "yolo_conf": yolo_conf,
+                "tabnet_conf": tabnet_conf,
+                "yes_count": yes_count,
+                "no_count": no_count
+            }
+        ),
+        reference_image_url=pick_reference_image(mode_str, yolo_conf, tabnet_conf)
     )
-
+    
+    return response
 
 if __name__ == "__main__":
     import uvicorn
