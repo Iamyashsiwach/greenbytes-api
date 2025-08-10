@@ -12,6 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from PIL import Image
+import io
+import numpy as np
+import cv2
 
 # Load environment variables
 load_dotenv()
@@ -85,6 +89,10 @@ def load_yolo_model(mode: str):
         return _yolo_models[mode]
     
     weights_path = YOLO_ESB_WEIGHTS if mode == "pest" else YOLO_DISEASE_WEIGHTS
+    try:
+        print(f"[YOLO] Mode={mode} Weights={weights_path} Exists={os.path.exists(weights_path)}")
+    except Exception:
+        pass
     
     if not os.path.exists(weights_path):
         _yolo_models[mode] = None
@@ -94,6 +102,7 @@ def load_yolo_model(mode: str):
         from ultralytics import YOLO
         model = YOLO(weights_path)
         _yolo_models[mode] = model
+        print(f"[YOLO] Loaded model for mode={mode}")
         return model
     except ImportError:
         print(f"ultralytics not installed, YOLO unavailable for {mode}")
@@ -117,43 +126,45 @@ def run_yolo_inference(mode: str, image_bytes: bytes) -> Dict:
         }
     
     try:
-        # Save bytes to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
-            tmp_file.write(image_bytes)
-            tmp_path = tmp_file.name
-        
+        # Try OpenCV decode first (more tolerant), then PIL fallback
+        img_array = None
         try:
-            # Run inference
-            results = model(tmp_path, conf=FUSION_YOLO_THRESHOLD)
-            
-            # Extract results
-            max_conf = 0.0
-            bboxes = []
-            
-            for r in results:
-                if r.boxes is not None and len(r.boxes) > 0:
-                    for box in r.boxes:
-                        conf = float(box.conf.cpu().numpy()[0])
-                        max_conf = max(max_conf, conf)
-                        
-                        # Convert bbox to list [x1, y1, x2, y2]
-                        xyxy = box.xyxy.cpu().numpy()[0].tolist()
-                        bboxes.append(xyxy)
-            
-            label = 1 if max_conf >= FUSION_YOLO_THRESHOLD else 0
-            
-            return {
-                "available": True,
-                "conf": max_conf,
-                "label": label,
-                "bboxes": bboxes
-            }
-            
-        finally:
-            # Clean up temp file
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-                
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if bgr is not None:
+                img_array = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        except Exception:
+            img_array = None
+
+        if img_array is None:
+            # PIL fallback
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            img_array = np.array(image)
+
+        # Run inference directly on array (RGB)
+        results = model(img_array, conf=FUSION_YOLO_THRESHOLD)
+
+        # Extract results
+        max_conf = 0.0
+        bboxes = []
+
+        for r in results:
+            if r.boxes is not None and len(r.boxes) > 0:
+                for box in r.boxes:
+                    conf = float(box.conf.cpu().numpy()[0])
+                    max_conf = max(max_conf, conf)
+                    xyxy = box.xyxy.cpu().numpy()[0].tolist()
+                    bboxes.append(xyxy)
+
+        label = 1 if max_conf >= FUSION_YOLO_THRESHOLD else 0
+
+        return {
+            "available": True,
+            "conf": max_conf,
+            "label": label,
+            "bboxes": bboxes
+        }
+
     except Exception as e:
         print(f"YOLO inference failed: {e}")
         return {
