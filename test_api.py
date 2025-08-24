@@ -26,10 +26,10 @@ def test_predict():
     img_bytes.seek(0)
     
     # Test data
-    files = {'image': ('test.jpg', img_bytes, 'image/jpeg')}
+    files = {'file': ('test.jpg', img_bytes, 'image/jpeg')}
     data = {
         'mode': 'disease',
-        'answers': json.dumps([1, 0, -1, 1, 0, 1, -1, 0, 1, 0])
+        'answers': json.dumps({"Q1": 1, "Q2": 0, "Q3": -1, "Q4": 1, "Q5": 0})
     }
     
     response = requests.post(f"{API_URL}/predict", files=files, data=data)
@@ -39,9 +39,9 @@ def test_predict():
         result = response.json()
         print(f"Mode: {result['mode']}")
         print(f"YOLO confidence: {result['yolo']['conf']}")
-        print(f"TabNet probability: {result['tabnet']['proba']}")
-        print(f"Fusion result: {result['fusion']['present']}")
-        print(f"Reference image: {result['ref_img']}")
+        print(f"TabNet confidence: {result['tabnet']['conf']}")
+        print(f"Fusion result: {result['fusion']['detected']}")
+        print(f"Reference image: {result['reference_image_url']}")
     else:
         print(f"Error: {response.text}")
 
