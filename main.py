@@ -17,6 +17,11 @@ import io
 import numpy as np
 import cv2
 
+# Import inference modules
+from inference.yolo_runner import run_yolo
+from inference.tabnet_runner import run_tabnet
+from inference.fusion import fuse
+
 # Load environment variables
 load_dotenv()
 
@@ -174,6 +179,28 @@ def run_yolo_inference(mode: str, image_bytes: bytes) -> Dict:
             "bboxes": []
         }
 
+def run_tabnet_real(answers: Dict[str, int], mode: str) -> Dict:
+    """Real TabNet implementation using trained models"""
+    try:
+        # Use the actual TabNet model
+        conf = run_tabnet(answers, mode)
+        
+        # Get positive answer keys (for interpretability)
+        top_positive_keys = [k for k, v in answers.items() if v == 1]
+        top_positive_keys.sort()
+        
+        # Determine label
+        label = 1 if conf >= FUSION_TABNET_THRESHOLD else 0
+        
+        return {
+            "conf": conf,
+            "label": label,
+            "top_positive_keys": top_positive_keys
+        }
+    except Exception as e:
+        print(f"Error in real TabNet: {e}, falling back to stub")
+        return run_tabnet_stub(answers)
+
 def run_tabnet_stub(answers: Dict[str, int]) -> Dict:
     """Stub TabNet implementation: conf = yes_count / (yes_count + no_count)"""
     if not answers:
@@ -308,7 +335,10 @@ async def predict(
         }
     
     # Run TabNet inference (always with answers, empty if not provided)
-    tabnet_result = run_tabnet_stub(answers_dict)
+    if os.getenv("USE_STUB", "true").lower() == "true":
+        tabnet_result = run_tabnet_stub(answers_dict)
+    else:
+        tabnet_result = run_tabnet_real(answers_dict, mode_str)
     
     # Fusion logic
     yolo_conf = yolo_result["conf"] if yolo_result["available"] else None

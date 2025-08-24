@@ -1,0 +1,17 @@
+{
+  "train_losses": [],
+  "val_losses": [],
+  "val_aucs": [],
+  "best_epoch": 31,
+  "best_val_auc": null,
+  "train_accuracy": 0.925,
+  "train_precision": 0.925,
+  "train_recall": 0.925,
+  "train_f1": 0.925,
+  "train_auc": 0.9568749999999999,
+  "val_accuracy": 0.975,
+  "val_precision": 0.9523809523809523,
+  "val_recall": 1.0,
+  "val_f1": 0.975609756097561,
+  "val_auc": 0.9974999999999999
+}

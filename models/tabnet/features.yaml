@@ -1,0 +1,53 @@
+id: sample_id
+date: timestamp
+targets:
+  larva: esb_present
+  deadheart: dead_heart_present
+
+numeric:
+  larva:
+    - confidence
+  deadheart:
+    - confidence
+
+categorical:
+  larva:
+    - Is the larva body dirty white?
+    - Does the larva have about five dark violet stripes along its body?
+    - Is the larva’s head dark brown?
+    - Do you see a hole near the root or lower stem?
+    - Is there frass (sawdust-like waste) near the holes?
+    - Is the stem hollow inside?
+    - Are the central leaves drying up?
+    - Is the plant younger than 120 days?
+    - Can the plant be easily pulled out of the soil?
+    - Is the top shoot dead but the lower leaves are green?
+    - Are the damaged plants scattered across the field?
+    - Do you see small cuts on the leaves?
+    - Are nearby plants showing the same damage?
+    - Is the growth of the plant slowed compared to healthy plants?
+    - Do you find the larva inside the stem when you split it?
+  deadheart:
+    - Is the stem yellow or brown in color?
+    - Is the stem dried?
+    - Does the plant smell rotten or decayed?
+    - Does the plant look weak or wilted?
+    - Can the plant be easily pulled out of the ground?
+    - Is the inside of the stem hollow?
+    - Do you see a hole near the root or lower stem?
+    - Is the plant younger than 120 days?
+    - Has the plant stopped growing taller?
+    - Are the leaves yellowing?
+    - Are the leaves drying from the tip downwards?
+    - Is there a single dead central shoot among green leaves?
+    - Do you notice any powdery waste (frass) near the base?
+    - Has the plant fallen over easily without strong wind?
+    - Do the new shoots fail to grow properly?
+
+# Notes:
+# - image_path and notes are intentionally excluded from features
+# - "Yes/No/Unknown" categorical values will be label-encoded
+
+
+
+

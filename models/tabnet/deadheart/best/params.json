@@ -1,0 +1,18 @@
+{
+  "task": "deadheart",
+  "csv_path": "deadheart.csv",
+  "features_yaml": "features.yaml",
+  "out_dir": "runs/deadheart",
+  "val_size": 0.2,
+  "seed": 42,
+  "max_epochs": 50,
+  "patience": 10,
+  "lr": 0.01,
+  "batch_size": 1024,
+  "n_d": 32,
+  "n_a": 32,
+  "n_steps": 5,
+  "gamma": 1.5,
+  "lambda_sparse": 0.0001,
+  "use_class_weights": false
+}
