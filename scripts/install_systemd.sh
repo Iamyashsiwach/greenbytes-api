@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+
 echo "🔧 Installing GreenBytes FastAPI systemd service"
 
 # Get the current directory (should be the repo root)
